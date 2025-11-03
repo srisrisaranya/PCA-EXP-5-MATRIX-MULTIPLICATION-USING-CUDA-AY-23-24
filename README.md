@@ -28,6 +28,9 @@ Google Colab with NVCC Compiler
 13.	Free Device Memory: Finally, free the device memory that was allocated for the matrices.
 ## PROGRAM:
 ```
+!pip install git+https://github.com/andreinechaev/nvcc4jupyter.git
+%load_ext nvcc4jupyter
+
 %%writefile matmul.cu
 #include <stdio.h>
 #include <cuda_runtime.h>
@@ -190,11 +193,17 @@ int main()
 
     return 0;
 }
+
+!nvcc -arch=sm_75 matmul.cu -o matmul
+!nvprof ./matmul
+!nvprof --print-gpu-trace ./matmul
 ```
 
 ## OUTPUT:
-<img width="1822" height="752" alt="image" src="https://github.com/user-attachments/assets/33f9fb57-a336-4ba4-857f-2ebc6c34221a" />
+<img width="1180" height="496" alt="image" src="https://github.com/user-attachments/assets/e5dcf78d-15d4-410b-9bf8-ba9322118a1b" />
+<img width="1743" height="358" alt="image" src="https://github.com/user-attachments/assets/ee0a1633-715b-48b9-80fc-376d9e0b5ac9" />
+
 
 
 ## RESULT:
-Thus the program has been executed by using CUDA to mulptiply two matrices. It is observed that there are variations in host and device elapsed time. Device took 3.7760 time and host took 0.000147 time.
+Thus the program has been executed by using CUDA to mulptiply two matrices. It is observed that there are variations in host and device elapsed time. Device took 0.000158 time and host took  0.000184 time.

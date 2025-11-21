@@ -31,11 +31,13 @@ Google Colab with NVCC Compiler
 !pip install git+https://github.com/andreinechaev/nvcc4jupyter.git
 %load_ext nvcc4jupyter
 
-%%writefile matmul.cu
+%%writefile matrix_mul.cu
 #include <stdio.h>
 #include <cuda_runtime.h>
 #include <cuda.h>
 #include <sys/time.h>
+#include <stdlib.h>
+#include <stdbool.h>
 
 #ifndef _COMMON_H
 #define _COMMON_H
@@ -52,55 +54,6 @@ Google Colab with NVCC Compiler
     }                                                                          \
 }
 
-#define CHECK_CUBLAS(call)                                                     \
-{                                                                              \
-    cublasStatus_t err;                                                        \
-    if ((err = (call)) != CUBLAS_STATUS_SUCCESS)                               \
-    {                                                                          \
-        fprintf(stderr, "Got CUBLAS error %d at %s:%d\n", err, __FILE__,       \
-                __LINE__);                                                     \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CURAND(call)                                                     \
-{                                                                              \
-    curandStatus_t err;                                                        \
-    if ((err = (call)) != CURAND_STATUS_SUCCESS)                               \
-    {                                                                          \
-        fprintf(stderr, "Got CURAND error %d at %s:%d\n", err, __FILE__,       \
-                __LINE__);                                                     \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CUFFT(call)                                                      \
-{                                                                              \
-    cufftResult err;                                                           \
-    if ( (err = (call)) != CUFFT_SUCCESS)                                      \
-    {                                                                          \
-        fprintf(stderr, "Got CUFFT error %d at %s:%d\n", err, __FILE__,        \
-                __LINE__);                                                     \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CUSPARSE(call)                                                   \
-{                                                                              \
-    cusparseStatus_t err;                                                      \
-    if ((err = (call)) != CUSPARSE_STATUS_SUCCESS)                             \
-    {                                                                          \
-        fprintf(stderr, "Got error %d at %s:%d\n", err, __FILE__, __LINE__);   \
-        cudaError_t cuda_err = cudaGetLastError();                             \
-        if (cuda_err != cudaSuccess)                                           \
-        {                                                                      \
-            fprintf(stderr, "  CUDA error \"%s\" also detected\n",             \
-                    cudaGetErrorString(cuda_err));                             \
-        }                                                                      \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
 inline double seconds()
 {
     struct timeval tp;
@@ -110,100 +63,131 @@ inline double seconds()
 }
 
 #endif // _COMMON_H
+
 #define SIZE 4
 #define BLOCK_SIZE 2
 
-// Kernel function to perform matrix multiplication
+// Host matrix multiplication for verification
+void matrixMultiplyHost(int *a, int *b, int *c, int size)
+{
+    for (int row = 0; row < size; ++row)
+    {
+        for (int col = 0; col < size; ++col)
+        {
+            int sum = 0;
+            for (int k = 0; k < size; ++k)
+            {
+                sum += a[row * size + k] * b[k * size + col];
+            }
+            c[row * size + col] = sum;
+        }
+    }
+}
+
+// GPU kernel
 __global__ void matrixMultiply(int *a, int *b, int *c, int size)
 {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int sum = 0;
     if (row < size && col < size)
     {
-    for (int k = 0; k < size; ++k)
-    {
-        sum += a[row * size + k] * b[k * size + col];
-    }
-    c[row * size + col] = sum;
+        int sum = 0;
+        for (int k = 0; k < size; ++k)
+        {
+            sum += a[row * size + k] * b[k * size + col];
+        }
+        c[row * size + col] = sum;
     }
 }
+
 int main()
 {
-    int a[SIZE][SIZE], b[SIZE][SIZE], c[SIZE][SIZE];
+    int a[SIZE * SIZE], b[SIZE * SIZE], c[SIZE * SIZE], c_host[SIZE * SIZE];
     int *dev_a, *dev_b, *dev_c;
-    int size = SIZE * SIZE * sizeof(int);
+    int bytes = SIZE * SIZE * sizeof(int);
 
-    // Initialize matrices 'a' and 'b'
+    // Initialize matrices
     for (int i = 0; i < SIZE; ++i)
     {
         for (int j = 0; j < SIZE; ++j)
         {
-            a[i][j] = i + j;
-            b[i][j] = i - j;
+            a[i * SIZE + j] = i + 1;
+            b[i * SIZE + j] = j + 1;
         }
     }
 
-    // Allocate memory on the device
-    cudaMalloc((void**)&dev_a, size);
-    cudaMalloc((void**)&dev_b, size);
-    cudaMalloc((void**)&dev_c, size);
+    // Allocate device memory
+    CHECK(cudaMalloc((void**)&dev_a, bytes));
+    CHECK(cudaMalloc((void**)&dev_b, bytes));
+    CHECK(cudaMalloc((void**)&dev_c, bytes));
 
-    // Copy input matrices from host to device memory
-    cudaMemcpy(dev_a, a, size, cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_b, b, size, cudaMemcpyHostToDevice);
+    // Copy to device
+    CHECK(cudaMemcpy(dev_a, a, bytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dev_b, b, bytes, cudaMemcpyHostToDevice));
 
-    // Set grid and block sizes
-    dim3 dimGrid(SIZE / BLOCK_SIZE, SIZE / BLOCK_SIZE);
+    // CUDA execution
     dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 dimGrid((SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE, (SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-    // Start timer
     struct timeval start, end;
     gettimeofday(&start, NULL);
 
-    // Launch kernel
     matrixMultiply<<<dimGrid, dimBlock>>>(dev_a, dev_b, dev_c, SIZE);
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
 
-    // Copy result matrix from device to host memory
-    cudaMemcpy(c, dev_c, size, cudaMemcpyDeviceToHost);
-
-    // Stop timer
     gettimeofday(&end, NULL);
-    double elapsed_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.0;
+    double elapsed_gpu = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
 
-// Print the result matrix
-    printf("Result Matrix:\n");
+    CHECK(cudaMemcpy(c, dev_c, bytes, cudaMemcpyDeviceToHost));
+
+    // CPU execution
+    gettimeofday(&start, NULL);
+    matrixMultiplyHost(a, b, c_host, SIZE);
+    gettimeofday(&end, NULL);
+    double elapsed_cpu = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+
+    // Print results
+    printf("Result Matrix from GPU:\n");
     for (int i = 0; i < SIZE; ++i)
     {
         for (int j = 0; j < SIZE; ++j)
         {
-            printf("%d ", c[i][j]);
+            printf("%d ", c[i * SIZE + j]);
         }
         printf("\n");
     }
 
-    // Print the elapsed time
-    printf("Elapsed Time: %.6f seconds\n", elapsed_time);
+    printf("\nResult Matrix from CPU:\n");
+    for (int i = 0; i < SIZE; ++i)
+    {
+        for (int j = 0; j < SIZE; ++j)
+        {
+            printf("%d ", c_host[i * SIZE + j]);
+        }
+        printf("\n");
+    }
 
-    // Free device memory
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    cudaFree(dev_c);
+
+
+    printf("GPU Time: %.6f s\n", elapsed_gpu);
+    printf("CPU Time: %.6f s\n", elapsed_cpu);
+
+    // Cleanup
+    CHECK(cudaFree(dev_a));
+    CHECK(cudaFree(dev_b));
+    CHECK(cudaFree(dev_c));
 
     return 0;
 }
 
-!nvcc -arch=sm_75 matmul.cu -o matmul
-!nvprof ./matmul
-!nvprof --print-gpu-trace ./matmul
 ```
 
 ## OUTPUT:
-<img width="1180" height="496" alt="image" src="https://github.com/user-attachments/assets/e5dcf78d-15d4-410b-9bf8-ba9322118a1b" />
-<img width="1743" height="358" alt="image" src="https://github.com/user-attachments/assets/ee0a1633-715b-48b9-80fc-376d9e0b5ac9" />
+<img width="1311" height="597" alt="image" src="https://github.com/user-attachments/assets/bb80893f-43e1-47d4-a44d-ec13a61872c0" />
 
 
 
 ## RESULT:
-Thus the program has been executed by using CUDA to mulptiply two matrices. It is observed that there are variations in host and device elapsed time. Device took 0.000158 time and host took  0.000184 time.
+Thus the program has been executed by using CUDA to mulptiply two matrices. It is observed that there are variations in host and device elapsed time. Device took 0.000165 time and host took  0.000001 time.
